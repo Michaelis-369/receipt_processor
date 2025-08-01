@@ -43,6 +43,22 @@ def manual_entry_form(default_sender=None):
             }
     return None
 
+def generate_safe_filename(parsed_data, sender):
+    """Generate consistent filename for both AI and manual entries"""
+    # Ensure all required fields exist with proper fallbacks
+    receipt_num = parsed_data.get('receipt_number', 'Unknown').replace('/', '-')
+    item = parsed_data.get('item', 'Unknown')[:50]
+    
+    # Use the name from parsed_data if available (for manual entries), otherwise from sender
+    sender_name = parsed_data.get('name', sender.get('name', 'ManualEntry'))[:20]
+    
+    # Clean each component
+    clean_receipt_num = re.sub(r'[^\w.-]', '_', receipt_num)
+    clean_item = re.sub(r'[^\w.-]', '_', item)
+    clean_sender = re.sub(r'[^\w.-]', '_', sender_name)
+    
+    return f"{clean_receipt_num}_{clean_item}_{clean_sender}.pdf"
+
 uploaded_file = st.file_uploader("Drag & drop receipt PDF", type="pdf")
 
 if uploaded_file:
@@ -65,10 +81,14 @@ if uploaded_file:
                     st.session_state.manual_data = manual_entry_form(sender)
                     if st.session_state.manual_data:
                         parsed_data = st.session_state.manual_data
-                
+                        # Use the manually entered name instead of default sender
+                        sender = {  # Update sender with manual entry data
+                            'name': parsed_data.get('name', 'ManualEntry'),
+                            'email': parsed_data.get('email', 'no_email@example.com')
+                        }
+                        parsed_data.setdefault('receipt_number', 'ManualEntry_' + datetime.now().strftime("%Y%m%d%H%M%S"))
                 if parsed_data:
-                    safe_name = f"{parsed_data['receipt_number']}_{parsed_data['item'][:50]}_{sender['name'][:20]}.pdf"
-                    safe_name = re.sub(r'[^\w.-]', '_', safe_name)
+                    safe_name = generate_safe_filename(parsed_data, sender)
                     receipt_path = os.path.join("receipts", safe_name)
                     
                     os.makedirs("receipts", exist_ok=True)
