@@ -1,200 +1,105 @@
 import os
-import imaplib
-import email
 import re
-import openai
-import gspread
-import json
-from oauth2client.service_account import ServiceAccountCredentials
+import hashlib
+from io import BytesIO
+import streamlit as st
+import PyPDF2
+import processor
 from datetime import datetime
-from dotenv import load_dotenv
-import streamlit as st
 
-# --- Initialization ---
-load_dotenv()
+# Initialize session state
+if 'processed_files' not in st.session_state:
+    st.session_state.processed_files = set()
+if 'manual_data' not in st.session_state:
+    st.session_state.manual_data = None
 
-# Configuration
-openai.api_key = os.getenv("OPENAI_API_KEY")
-EMAIL = os.getenv("EMAIL_ADDRESS")
-PASSWORD = os.getenv("EMAIL_PASSWORD")
-SHEET_ID = os.getenv("SHEET_ID")
+st.title("📄 Smart Receipt Processor")
 
-import os
-import json
-import streamlit as st
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-
-def get_sheet():
-    """Initialize Google Sheets connection with proper error handling."""
-    try:
-        service_json = os.getenv('SERVICE_ACCOUNT_JSON')
-        sheet_id = os.getenv('SHEET_ID')
-
-        if not service_json:
-            st.error("Missing SERVICE_ACCOUNT_JSON in environment variables")
-            return None
-        if not sheet_id:
-            st.error("Missing GOOGLE_SHEET_ID in environment variables")
-            return None
-
-        service_account_info = json.loads(service_json)
-
-        # Ensure required fields exist
-        required_fields = ['type', 'project_id', 'private_key', 'client_email']
-        if not all(field in service_account_info for field in required_fields):
-            st.error("Service account JSON missing required fields")
-            return None
-
-        # Fix private key formatting
-        service_account_info['private_key'] = service_account_info['private_key'].replace('\\n', '\n')
-
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(
-            service_account_info,
-            ['https://www.googleapis.com/auth/spreadsheets']
-        )
-
-        gc = gspread.authorize(creds)
-        spreadsheet = gc.open_by_key(sheet_id)
-        return spreadsheet.sheet1
-
-    except json.JSONDecodeError:
-        st.error("Invalid SERVICE_ACCOUNT_JSON format")
-        return None
-    except gspread.exceptions.APIError as e:
-        st.error(f"Google API Error: {str(e)}")
-        return None
-    except Exception as e:
-        st.error(f"Google Sheets connection failed: {str(e)}")
-        return None
-
-
-def get_emails():
-    """Fetch unread emails from inbox with improved error handling"""
-    try:
-        mail = imaplib.IMAP4_SSL('imap.gmail.com')
-        mail.login(EMAIL, PASSWORD)
-        mail.select('inbox')
+def manual_entry_form(default_sender=None):
+    with st.form("manual_entry"):
+        st.subheader("Manual Entry")
+        sender_name = st.text_input("Sender Name", value=default_sender['name'] if default_sender else "")
+        sender_email = st.text_input("Sender Email", value=default_sender['email'] if default_sender else "")
         
-        status, messages = mail.search(None, '(UNSEEN)')
-        if status != 'OK':
-            return []
+        col1, col2 = st.columns(2)
+        with col1:
+            item = st.text_input("Item", "Unknown")
+            cost = st.text_input("Cost", "0")
+        with col2:
+            date = st.date_input("Date", datetime.now())
+            source = st.text_input("Source", "Unknown")
         
-        emails = []
-        for eid in messages[0].split():
-            status, data = mail.fetch(eid, '(RFC822)')
-            if status != 'OK':
-                continue
-                
-            msg = email.message_from_bytes(data[0][1])
-            sender = re.search(r'From:\s+"?(.+?)"?\s+<(.+?)>', msg.as_string())
-            
-            emails.append({
-                'name': sender.group(1) if sender else 'Unknown',
-                'email': sender.group(2) if sender else 'unknown@email.com'
-            })
-            mail.store(eid, '+FLAGS', '\\Seen')
+        receipt_number = st.text_input("Receipt Number", "Unknown")
         
-        return emails
+        if st.form_submit_button("Submit"):
+            return {
+                'name': sender_name,
+                'email': sender_email,
+                'item': item,
+                'cost': cost,
+                'date': date.strftime("%Y-%m-%d"),
+                'source': source,
+                'receipt_number': receipt_number
+            }
+    return None
+
+uploaded_file = st.file_uploader("Drag & drop receipt PDF", type="pdf")
+
+if uploaded_file:
+    file_bytes = uploaded_file.read()
+    file_hash = hashlib.md5(file_bytes).hexdigest()
     
-    except imaplib.IMAP4.error as e:
-        st.error(f"IMAP Error: {str(e)}")
-        return []
-    except Exception as e:
-        st.error(f"Email processing error: {str(e)}")
-        return []
-    finally:
-        try:
-            mail.close()
-            mail.logout()
-        except:
-            pass
+    if file_hash not in st.session_state.processed_files:
+        with st.spinner("Processing..."):
+            try:
+                pdf_file = BytesIO(file_bytes)
+                text = "\n".join([page.extract_text() for page in PyPDF2.PdfReader(pdf_file).pages])
+                
+                senders = processor.get_emails()
+                sender = senders[0] if senders else {'name': 'Manual_Entry', 'email': 'no_email@example.com'}
+                
+                parsed_data = processor.parse_pdf_from_text(text)
+                
+                if parsed_data is None:
+                    st.warning("⚠️ Auto-extraction failed")
+                    st.session_state.manual_data = manual_entry_form(sender)
+                    if st.session_state.manual_data:
+                        parsed_data = st.session_state.manual_data
+                
+                if parsed_data:
+                    safe_name = f"{parsed_data['receipt_number']}_{parsed_data['item'][:50]}_{sender['name'][:20]}.pdf"
+                    safe_name = re.sub(r'[^\w.-]', '_', safe_name)
+                    receipt_path = os.path.join("receipts", safe_name)
+                    
+                    os.makedirs("receipts", exist_ok=True)
+                    with open(receipt_path, "wb") as f:
+                        f.write(file_bytes)
+                    
+                    success = processor.append_to_sheet([
+                        parsed_data.get('name', sender['name']),
+                        parsed_data.get('email', sender['email']),
+                        parsed_data['item'],
+                        parsed_data['cost'],
+                        parsed_data['date'],
+                        parsed_data['source'],
+                        parsed_data['receipt_number']
+                    ])
+                    
+                    if success:
+                        st.session_state.processed_files.add(file_hash)
+                        st.session_state.current_receipt = receipt_path
+                        st.session_state.current_name = safe_name
+                        st.success("✅ Processing complete!")
+                        st.json(parsed_data)
+                
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
 
-def parse_pdf_from_text(text):
-    """Parse receipt text using OpenAI with better error handling"""
-    try:
-        prompt = """Extract from receipt:
-        {
-            "item": "most expensive item",
-            "cost": "total amount",
-            "date": "YYYY-MM-DD",
-            "source": "store/vendor",
-            "receipt_number": "number if available"
-        }""" + text[:2000]
-        
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1
-        )
-        
-        json_str = response.choices[0].message.content
-        json_str = json_str.replace("```json", "").replace("```", "").strip()
-        result = json.loads(json_str)
-        
-        return {
-            "item": result.get("item", "Unknown"),
-            "cost": result.get("cost", "0"),
-            "date": result.get("date", datetime.now().strftime("%Y-%m-%d")),
-            "source": result.get("source", "Unknown"),
-            "receipt_number": result.get("receipt_number", "Unknown")
-        }
-        
-    except json.JSONDecodeError:
-        st.error("Failed to parse OpenAI response")
-        return None
-    except openai.error.OpenAIError as e:
-        st.error(f"OpenAI Error: {str(e)}")
-        return None
-    except Exception as e:
-        st.error(f"Parsing error: {str(e)}")
-        return None
-
-import streamlit as st
-import gspread
-
-def append_to_sheet(data):
-    """
-    Append a row of data to a Google Sheet with header check, 
-    duplicate check (based on Receipt Number), and proper error handling.
-    """
-    try:
-        sheet = get_sheet()
-        if not sheet:
-            st.error("❌ Failed to access the Google Sheet.")
-            return False
-
-        # Define expected header
-        expected_header = [
-            "Sender Name", "Sender Email", "Item", 
-            "Cost", "Date", "Source", "Receipt Number"
-        ]
-
-        # Check and set header if needed
-        current_header = sheet.row_values(1)
-        if current_header != expected_header:
-            if any(current_header):  # Header exists but is wrong
-                sheet.delete_rows(1)
-            sheet.insert_row(expected_header, 1)
-
-        # Fetch existing data
-        existing_data = sheet.get_all_values()
-
-        # Extract existing receipt numbers (assuming Receipt Number is in column 7)
-        existing_receipts = {row[6] for row in existing_data[1:] if len(row) > 6}
-
-        if data[6] not in existing_receipts:
-            sheet.append_row(data)
-            st.success("✅ Successfully saved to Google Sheets.")
-            return True
-        else:
-            st.warning("⚠️ Entry with the same receipt number already exists.")
-            return False
-
-    except gspread.exceptions.APIError as e:
-        st.error(f"Google Sheets API Error: {str(e)}")
-        return False
-
-    except Exception as e:
-        st.error(f"Unexpected error: {str(e)}")
-        return False
+    if 'current_receipt' in st.session_state:
+        with open(st.session_state.current_receipt, "rb") as f:
+            st.download_button(
+                "Download Receipt",
+                data=f,
+                file_name=st.session_state.current_name,
+                mime="application/pdf"
+            )
