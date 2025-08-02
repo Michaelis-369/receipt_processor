@@ -15,11 +15,12 @@ if 'manual_data' not in st.session_state:
 
 st.title("📄 Smart Receipt Processor")
 
-def manual_entry_form(default_sender=None):
+def manual_entry_form():
+    """Manual entry form that preserves all user inputs"""
     with st.form("manual_entry"):
         st.subheader("Manual Entry")
-        sender_name = st.text_input("Sender Name", value=default_sender['name'] if default_sender else "")
-        sender_email = st.text_input("Sender Email", value=default_sender['email'] if default_sender else "")
+        sender_name = st.text_input("Sender Name", value="")
+        sender_email = st.text_input("Sender Email", value="")
         
         col1, col2 = st.columns(2)
         with col1:
@@ -33,31 +34,22 @@ def manual_entry_form(default_sender=None):
         
         if st.form_submit_button("Submit"):
             return {
-                'name': sender_name,
-                'email': sender_email,
+                'name': sender_name or "ManualEntry",
+                'email': sender_email or "no_email@example.com",
                 'item': item,
                 'cost': cost,
                 'date': date.strftime("%Y-%m-%d"),
                 'source': source,
-                'receipt_number': receipt_number
+                'receipt_number': receipt_number or f"Manual_{datetime.now().strftime('%Y%m%d%H%M%S')}"
             }
     return None
 
-def generate_safe_filename(parsed_data, sender):
+def generate_safe_filename(parsed_data):
     """Generate consistent filename for both AI and manual entries"""
-    # Ensure all required fields exist with proper fallbacks
-    receipt_num = parsed_data.get('receipt_number', 'Unknown').replace('/', '-')
-    item = parsed_data.get('item', 'Unknown')[:50]
-    
-    # Use the name from parsed_data if available (for manual entries), otherwise from sender
-    sender_name = parsed_data.get('name', sender.get('name', 'ManualEntry'))[:20]
-    
-    # Clean each component
-    clean_receipt_num = re.sub(r'[^\w.-]', '_', receipt_num)
-    clean_item = re.sub(r'[^\w.-]', '_', item)
-    clean_sender = re.sub(r'[^\w.-]', '_', sender_name)
-    
-    return f"{clean_receipt_num}_{clean_item}_{clean_sender}.pdf"
+    receipt_num = re.sub(r'[^\w.-]', '_', str(parsed_data.get('receipt_number', 'Unknown')))
+    item = re.sub(r'[^\w.-]', '_', str(parsed_data.get('item', 'Unknown'))[:50])
+    sender = re.sub(r'[^\w.-]', '_', str(parsed_data.get('name', 'ManualEntry'))[:20])
+    return f"{receipt_num}_{item}_{sender}.pdf"
 
 uploaded_file = st.file_uploader("Drag & drop receipt PDF", type="pdf")
 
@@ -71,24 +63,24 @@ if uploaded_file:
                 pdf_file = BytesIO(file_bytes)
                 text = "\n".join([page.extract_text() for page in PyPDF2.PdfReader(pdf_file).pages])
                 
+                # Get emails FIRST (before manual entry)
                 senders = processor.get_emails()
-                sender = senders[0] if senders else {'name': 'Manual_Entry', 'email': 'no_email@example.com'}
+                sender_from_email = senders[0] if senders else None
                 
                 parsed_data = processor.parse_pdf_from_text(text)
                 
                 if parsed_data is None:
-                    st.warning("⚠️ Auto-extraction failed")
-                    st.session_state.manual_data = manual_entry_form(sender)
-                    if st.session_state.manual_data:
-                        parsed_data = st.session_state.manual_data
-                        # Use the manually entered name instead of default sender
-                        sender = {  # Update sender with manual entry data
-                            'name': parsed_data.get('name', 'ManualEntry'),
-                            'email': parsed_data.get('email', 'no_email@example.com')
-                        }
-                        parsed_data.setdefault('receipt_number', 'ManualEntry_' + datetime.now().strftime("%Y%m%d%H%M%S"))
+                    st.warning("⚠️ Could not auto-extract receipt data")
+                    manual_data = manual_entry_form()
+                    if manual_data:
+                        parsed_data = manual_data
+                        # Preserve email sender if available
+                        if sender_from_email:
+                            parsed_data['email'] = sender_from_email['email']
+                            parsed_data['name'] = sender_from_email['name']
+                
                 if parsed_data:
-                    safe_name = generate_safe_filename(parsed_data, sender)
+                    safe_name = generate_safe_filename(parsed_data)
                     receipt_path = os.path.join("receipts", safe_name)
                     
                     os.makedirs("receipts", exist_ok=True)
@@ -96,8 +88,8 @@ if uploaded_file:
                         f.write(file_bytes)
                     
                     success = processor.append_to_sheet([
-                        parsed_data.get('name', sender['name']),
-                        parsed_data.get('email', sender['email']),
+                        parsed_data['name'],
+                        parsed_data['email'],
                         parsed_data['item'],
                         parsed_data['cost'],
                         parsed_data['date'],
@@ -118,7 +110,7 @@ if uploaded_file:
     if 'current_receipt' in st.session_state:
         with open(st.session_state.current_receipt, "rb") as f:
             st.download_button(
-                "Download Receipt",
+                "Download Processed Receipt",
                 data=f,
                 file_name=st.session_state.current_name,
                 mime="application/pdf"
