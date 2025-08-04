@@ -5,6 +5,8 @@ import re
 import openai
 import gspread
 import json
+from email.header import decode_header
+from email.utils import parseaddr
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 from dotenv import load_dotenv
@@ -18,12 +20,6 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 EMAIL = os.getenv("EMAIL_ADDRESS")
 PASSWORD = os.getenv("EMAIL_PASSWORD")
 SHEET_ID = os.getenv("SHEET_ID")
-
-import os
-import json
-import streamlit as st
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 
 def get_sheet():
     """Initialize Google Sheets connection with proper error handling."""
@@ -58,57 +54,70 @@ def get_sheet():
         spreadsheet = gc.open_by_key(sheet_id)
         return spreadsheet.sheet1
 
-    except json.JSONDecodeError:
-        st.error("Invalid SERVICE_ACCOUNT_JSON format")
-        return None
-    except gspread.exceptions.APIError as e:
-        st.error(f"Google API Error: {str(e)}")
-        return None
     except Exception as e:
         st.error(f"Google Sheets connection failed: {str(e)}")
         return None
 
-
-def get_emails():
-    """Fetch unread emails from inbox with improved error handling"""
+def get_unread_emails():
+    """Fetch unread emails without marking them as read"""
     try:
         mail = imaplib.IMAP4_SSL('imap.gmail.com')
         mail.login(EMAIL, PASSWORD)
         mail.select('inbox')
         
         status, messages = mail.search(None, '(UNSEEN)')
-        if status != 'OK':
+        if status != 'OK' or not messages[0]:
             return []
         
         emails = []
         for eid in messages[0].split():
-            status, data = mail.fetch(eid, '(RFC822)')
+            status, data = mail.fetch(eid, '(RFC822 BODY.PEEK[HEADER])')
             if status != 'OK':
                 continue
                 
             msg = email.message_from_bytes(data[0][1])
-            sender = re.search(r'From:\s+"?(.+?)"?\s+<(.+?)>', msg.as_string())
+            
+            # Decode subject
+            subject, encoding = decode_header(msg["Subject"])[0]
+            if isinstance(subject, bytes):
+                subject = subject.decode(encoding if encoding else 'utf-8')
+            
+            # Get sender info
+            from_ = parseaddr(msg.get("From"))
+            sender_name, sender_email = from_
             
             emails.append({
-                'name': sender.group(1) if sender else 'Unknown',
-                'email': sender.group(2) if sender else 'unknown@email.com'
+                'id': eid,
+                'subject': subject,
+                'from': f"{sender_name} <{sender_email}>",
+                'name': sender_name,
+                'email': sender_email,
+                'date': msg.get("Date")
             })
-            mail.store(eid, '+FLAGS', '\\Seen')
         
         return emails
     
-    except imaplib.IMAP4.error as e:
-        st.error(f"IMAP Error: {str(e)}")
-        return []
     except Exception as e:
-        st.error(f"Email processing error: {str(e)}")
+        st.error(f"Email fetch error: {str(e)}")
         return []
     finally:
         try:
             mail.close()
-            mail.logout()
         except:
             pass
+
+def mark_email_as_read(email_id):
+    """Mark specific email as read"""
+    try:
+        mail = imaplib.IMAP4_SSL('imap.gmail.com')
+        mail.login(EMAIL, PASSWORD)
+        mail.select('inbox')
+        mail.store(email_id, '+FLAGS', '\\Seen')
+        mail.close()
+        return True
+    except Exception as e:
+        st.error(f"Error marking email as read: {str(e)}")
+        return False
 
 def parse_pdf_from_text(text):
     """Parse receipt text using OpenAI with better error handling"""
@@ -140,61 +149,38 @@ def parse_pdf_from_text(text):
             "receipt_number": result.get("receipt_number", "Unknown")
         }
         
-    except json.JSONDecodeError:
-        st.error("Failed to parse OpenAI response")
-        return None
-    except openai.error.OpenAIError as e:
-        st.error(f"OpenAI Error: {str(e)}")
-        return None
     except Exception as e:
         st.error(f"Parsing error: {str(e)}")
         return None
 
-import streamlit as st
-import gspread
-
 def append_to_sheet(data):
-    """
-    Append a row of data to a Google Sheet with header check, 
-    duplicate check (based on Receipt Number), and proper error handling.
-    """
+    """Append data to Google Sheet with duplicate checking"""
     try:
         sheet = get_sheet()
         if not sheet:
-            st.error("❌ Failed to access the Google Sheet.")
             return False
 
-        # Define expected header
         expected_header = [
             "Sender Name", "Sender Email", "Item", 
             "Cost", "Date", "Source", "Receipt Number"
         ]
 
-        # Check and set header if needed
         current_header = sheet.row_values(1)
         if current_header != expected_header:
-            if any(current_header):  # Header exists but is wrong
+            if any(current_header):
                 sheet.delete_rows(1)
             sheet.insert_row(expected_header, 1)
 
-        # Fetch existing data
         existing_data = sheet.get_all_values()
-
-        # Extract existing receipt numbers (assuming Receipt Number is in column 7)
         existing_receipts = {row[6] for row in existing_data[1:] if len(row) > 6}
 
         if data[6] not in existing_receipts:
             sheet.append_row(data)
-            st.success("✅ Successfully saved to Google Sheets.")
             return True
-        else:
-            st.warning("⚠️ Entry with the same receipt number already exists.")
-            return False
-
-    except gspread.exceptions.APIError as e:
-        st.error(f"Google Sheets API Error: {str(e)}")
+        
+        st.warning("⚠️ Entry with the same receipt number already exists.")
         return False
 
     except Exception as e:
-        st.error(f"Unexpected error: {str(e)}")
+        st.error(f"Sheet append error: {str(e)}")
         return False
