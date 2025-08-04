@@ -12,6 +12,8 @@ if 'processed_files' not in st.session_state:
     st.session_state.processed_files = set()
 if 'manual_data' not in st.session_state:
     st.session_state.manual_data = None
+if 'selected_email' not in st.session_state:
+    st.session_state.selected_email = None
 
 st.title("📄 Smart Receipt Processor")
 
@@ -51,6 +53,34 @@ def generate_safe_filename(parsed_data):
     sender = re.sub(r'[^\w.-]', '_', str(parsed_data.get('name', 'ManualEntry'))[:20])
     return f"{receipt_num}_{item}_{sender}.pdf"
 
+# Email selection section
+st.subheader("1. Select Email Source")
+if st.button("Check for Unread Emails"):
+    with st.spinner("Fetching unread emails..."):
+        unread_emails = processor.get_unread_emails()
+        
+        if unread_emails:
+            st.session_state.unread_emails = unread_emails
+        else:
+            st.info("No unread emails found")
+
+if 'unread_emails' in st.session_state:
+    email_options = {i: f"{email['subject']} (From: {email['from']})" 
+                    for i, email in enumerate(st.session_state.unread_emails)}
+    
+    selected_index = st.selectbox(
+        "Select email to associate with receipt",
+        options=list(email_options.keys()),
+        format_func=lambda x: email_options[x],
+        index=None
+    )
+    
+    if selected_index is not None:
+        st.session_state.selected_email = st.session_state.unread_emails[selected_index]
+        st.success(f"Selected email: {st.session_state.selected_email['subject']}")
+
+# PDF upload section
+st.subheader("2. Upload Receipt PDF")
 uploaded_file = st.file_uploader("Drag & drop receipt PDF", type="pdf")
 
 if uploaded_file:
@@ -63,9 +93,13 @@ if uploaded_file:
                 pdf_file = BytesIO(file_bytes)
                 text = "\n".join([page.extract_text() for page in PyPDF2.PdfReader(pdf_file).pages])
                 
-                # Get emails FIRST (before manual entry)
-                senders = processor.get_emails()
-                sender_from_email = senders[0] if senders else None
+                # Use selected email info if available
+                sender_info = None
+                if st.session_state.selected_email:
+                    sender_info = {
+                        'name': st.session_state.selected_email['name'],
+                        'email': st.session_state.selected_email['email']
+                    }
                 
                 parsed_data = processor.parse_pdf_from_text(text)
                 
@@ -74,10 +108,10 @@ if uploaded_file:
                     manual_data = manual_entry_form()
                     if manual_data:
                         parsed_data = manual_data
-                        # Preserve email sender if available
-                        if sender_from_email:
-                            parsed_data['email'] = sender_from_email['email']
-                            parsed_data['name'] = sender_from_email['name']
+                        # Use email sender if available
+                        if sender_info:
+                            parsed_data['email'] = sender_info['email']
+                            parsed_data['name'] = sender_info['name']
                 
                 if parsed_data:
                     safe_name = generate_safe_filename(parsed_data)
@@ -101,6 +135,11 @@ if uploaded_file:
                         st.session_state.processed_files.add(file_hash)
                         st.session_state.current_receipt = receipt_path
                         st.session_state.current_name = safe_name
+                        
+                        # Mark email as read after successful processing
+                        if st.session_state.selected_email:
+                            processor.mark_email_as_read(st.session_state.selected_email['id'])
+                        
                         st.success("✅ Processing complete!")
                         st.json(parsed_data)
                 
