@@ -1,19 +1,25 @@
 import re
 import json
 import requests
+import imaplib
+import email
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from email.header import decode_header
+from email.utils import parseaddr
 from datetime import datetime
 from dateutil import parser
+from oauth2client.service_account import ServiceAccountCredentials
 
 class ReceiptProcessor:
-    def __init__(self, anthropic_api_key, sheet_id, google_creds):
+    def __init__(self, anthropic_api_key, email_address, email_password, sheet_id, google_creds):
         self.anthropic_headers = {
             "x-api-key": anthropic_api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json"
         }
         self.anthropic_url = "https://api.anthropic.com/v1/messages"
+        self.email_address = email_address
+        self.email_password = email_password
         self.sheet_id = sheet_id
         self.google_creds = google_creds
         self._init_google_sheets()
@@ -93,6 +99,51 @@ class ReceiptProcessor:
             return parser.parse(date_str).strftime("%Y-%m-%d")
         except:
             return datetime.now().strftime("%Y-%m-%d")
+
+    def get_unread_emails(self):
+        try:
+            mail = imaplib.IMAP4_SSL('imap.gmail.com')
+            mail.login(self.email_address, self.email_password)
+            mail.select('inbox')
+            
+            status, messages = mail.search(None, '(UNSEEN)')
+            if status != 'OK' or not messages[0]:
+                return []
+            
+            emails = []
+            for eid in messages[0].split():
+                status, data = mail.fetch(eid, '(RFC822 BODY.PEEK[HEADER])')
+                if status != 'OK':
+                    continue
+                    
+                msg = email.message_from_bytes(data[0][1])
+                
+                subject, encoding = decode_header(msg["Subject"])[0]
+                if isinstance(subject, bytes):
+                    subject = subject.decode(encoding if encoding else 'utf-8')
+                
+                from_ = parseaddr(msg.get("From"))
+                sender_name, sender_email = from_
+                
+                emails.append({
+                    'id': eid.decode(),
+                    'subject': subject[:100],
+                    'from': f"{sender_name} <{sender_email}>",
+                    'name': sender_name[:50],
+                    'email': sender_email[:100],
+                    'date': msg.get("Date", "")[:50]
+                })
+            
+            return emails
+        except Exception as e:
+            print(f"Email error: {str(e)}")
+            return []
+        finally:
+            try:
+                mail.close()
+                mail.logout()
+            except:
+                pass
 
     def append_to_sheet(self, data):
         try:
