@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.env
+
+# Secrets
+.secrets
+.streamlit/secrets.toml
+
+# System
+.DS_Store
