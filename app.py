@@ -14,7 +14,8 @@ def init_session_state():
         'processing_stage': "upload",
         'unread_emails': None,
         'email_check_performed': False,
-        'sender_info': None
+        'sender_info': None,
+        'duplicate_receipt': False  # New session state for duplicate tracking
     }
     for key, value in session_vars.items():
         if key not in st.session_state:
@@ -86,6 +87,7 @@ def reset_processing():
     st.session_state.unread_emails = None
     st.session_state.email_check_performed = False
     st.session_state.sender_info = None
+    st.session_state.duplicate_receipt = False
     st.rerun()
 
 def sanitize_filename(text):
@@ -153,26 +155,49 @@ if st.session_state.processing_stage == "upload":
     
     if uploaded_file:
         with st.spinner("Extracting receipt data..."):
-            file_bytes = uploaded_file.read()
-            
             try:
+                file_bytes = uploaded_file.read()
                 text = "\n".join(
                     page.extract_text() or "" 
                     for page in PyPDF2.PdfReader(BytesIO(file_bytes)).pages
                 )
+                
+                if not text.strip():
+                    st.error("The PDF appears to be empty or couldn't be read")
+                    st.session_state.processing_stage = "upload"
+                    st.stop()
+                
                 extracted_data = processor.parse_receipt_text(text)
                 
-                if extracted_data:
+                if not extracted_data:
+                    st.error("Could not extract data from PDF")
+                    st.session_state.processing_stage = "upload"
+                    st.stop()
+                
+                # Check for duplicate receipt
+                if processor.check_duplicate_receipt(extracted_data['receipt_number']):
+                    st.session_state.duplicate_receipt = True
+                    st.session_state.receipt_details = extracted_data
+                    st.session_state.current_receipt = file_bytes
+                    st.warning("⚠️ This receipt appears to have already been processed.\nClick the 'X' to cancel and process another receipt")
+                    st.json(st.session_state.receipt_details)
+                else:
                     st.session_state.receipt_details = extracted_data
                     st.session_state.current_receipt = file_bytes
                     st.session_state.processing_stage = "verify"
                     st.rerun()
-                else:
-                    st.error("Could not extract data from PDF")
-                    st.session_state.processing_stage = "verify"
+                    
             except Exception as e:
-                st.error(f"PDF processing error: {str(e)}")
-                st.session_state.processing_stage = "verify"
+                st.error(f"Error processing PDF: {str(e)}")
+                st.session_state.processing_stage = "upload"
+                st.stop()
+
+elif st.session_state.duplicate_receipt:
+    st.warning("⚠️ This receipt appears to have already been processed.\nClick the 'X' to cancel and process another receipt")
+    st.json(st.session_state.receipt_details)
+    
+    if st.button("Process Another Receipt"):
+        reset_processing()
 
 elif st.session_state.processing_stage == "verify":
     st.subheader("2. Verify Extracted Data")
