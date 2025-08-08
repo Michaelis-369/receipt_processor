@@ -25,6 +25,7 @@ class ReceiptProcessor:
         self._init_google_sheets()
 
     def _init_google_sheets(self):
+        """Initialize Google Sheets connection"""
         try:
             self.creds = ServiceAccountCredentials.from_json_keyfile_dict(
                 self.google_creds,
@@ -35,18 +36,20 @@ class ReceiptProcessor:
             raise Exception(f"Google Sheets initialization failed: {str(e)}")
 
     def clean_text(self, text):
+        """Clean extracted text"""
         text = re.sub(r'\s+', ' ', text).strip()
         text = re.sub(r'http[s]?://\S+', '', text)
-        return text[:5000]
+        return text[:5000]  # Limit to first 5000 chars
 
     def parse_receipt_text(self, text):
+        """Parse receipt text using Anthropic API"""
         if not text.strip():
             return None
 
         cleaned_text = self.clean_text(text)
         
         prompt = """Extract these details from the receipt text:
-        - item: The main product purchased (2-3 words max)
+        - item: The generic name of the product purchased (2 words max, hyphen separated if multiple)
         - cost: The grand total paid (numbers only)
         - date: The order date (YYYY-MM-DD format)
         - source: The store/vendor name
@@ -95,12 +98,14 @@ class ReceiptProcessor:
             return None
 
     def _parse_date(self, date_str):
+        """Parse and format date string"""
         try:
             return parser.parse(date_str).strftime("%Y-%m-%d")
         except:
             return datetime.now().strftime("%Y-%m-%d")
 
     def get_unread_emails(self):
+        """Fetch unread emails from Gmail"""
         try:
             mail = imaplib.IMAP4_SSL('imap.gmail.com')
             mail.login(self.email_address, self.email_password)
@@ -145,11 +150,28 @@ class ReceiptProcessor:
             except:
                 pass
 
-    def append_to_sheet(self, data):
+    def check_duplicate_receipt(self, receipt_number):
+        """Check if receipt already exists in the sheet"""
         try:
             spreadsheet = self.gc.open_by_key(self.sheet_id)
             sheet = spreadsheet.sheet1
             
+            # Get all receipt numbers from column 7 (index 6)
+            existing_numbers = sheet.col_values(7)[1:]  # Skip header row
+            
+            # Check if the receipt number already exists
+            return receipt_number in existing_numbers
+        except Exception as e:
+            print(f"Duplicate check error: {str(e)}")
+            return False
+
+    def append_to_sheet(self, data):
+        """Append receipt data to Google Sheet"""
+        try:
+            spreadsheet = self.gc.open_by_key(self.sheet_id)
+            sheet = spreadsheet.sheet1
+            
+            # Verify header
             expected_header = [
                 "Sender Name", "Sender Email", "Item", 
                 "Cost", "Date", "Source", "Receipt Number"
@@ -161,15 +183,22 @@ class ReceiptProcessor:
                     sheet.delete_rows(1)
                 sheet.insert_row(expected_header, 1)
 
-            existing_data = sheet.get_all_values()
-            existing_receipts = {row[6] for row in existing_data[1:] if len(row) > 6}
+            # Check for duplicates
+            if self.check_duplicate_receipt(data[6]):
+                return {
+                    "status": "duplicate",
+                    "message": "This receipt has already been processed"
+                }
 
-            if data[6] not in existing_receipts:
-                sheet.append_row(data)
-                return True
-            
-            print("Duplicate receipt - not added to sheet")
-            return False
+            # If not a duplicate, append the data
+            sheet.append_row(data)
+            return {
+                "status": "success",
+                "message": "Receipt successfully added to sheet"
+            }
         except Exception as e:
             print(f"Sheets error: {str(e)}")
-            return False
+            return {
+                "status": "error",
+                "message": f"Failed to process receipt: {str(e)}"
+            }
