@@ -156,8 +156,8 @@ class ReceiptProcessor:
             spreadsheet = self.gc.open_by_key(self.sheet_id)
             sheet = spreadsheet.sheet1
             
-            # Get all receipt numbers from column 7 (index 6)
-            existing_numbers = sheet.col_values(7)[1:]  # Skip header row
+            # Get all receipt numbers from column 13 (index 12)
+            existing_numbers = sheet.col_values(13)[1:]  # Skip header row
             
             # Check if the receipt number already exists
             return receipt_number in existing_numbers
@@ -166,15 +166,17 @@ class ReceiptProcessor:
             return False
 
     def append_to_sheet(self, data):
-        """Append receipt data to Google Sheet"""
+        """Append receipt data to Google Sheet with proper number formatting"""
         try:
             spreadsheet = self.gc.open_by_key(self.sheet_id)
             sheet = spreadsheet.sheet1
             
-            # Verify header
+            # Updated header with new column order
             expected_header = [
-                "Sender Name", "Sender Email", "Item", 
-                "Cost", "Date", "Source", "Receipt Number"
+                "Date", "Vendor/Source", "Paid Inv/Pcard", 
+                "Operational", "Carpenter", "Equipment", 
+                "McCabe", "Other", "Notes",
+                "Sender Name", "Sender Email", "Item", "Receipt Number"
             ]
             
             current_header = sheet.row_values(1)
@@ -184,14 +186,47 @@ class ReceiptProcessor:
                 sheet.insert_row(expected_header, 1)
 
             # Check for duplicates
-            if self.check_duplicate_receipt(data[6]):
+            if self.check_duplicate_receipt(data[12]):
                 return {
                     "status": "duplicate",
                     "message": "This receipt has already been processed"
                 }
 
-            # If not a duplicate, append the data
-            sheet.append_row(data)
+            # Method 1: Find last row with date pattern
+            all_dates = sheet.col_values(1)
+            last_data_row = 1
+            
+            for i, date_value in enumerate(all_dates[1:], start=2):
+                if date_value and re.match(r'^\d{4}-\d{2}-\d{2}$', str(date_value)):
+                    last_data_row = i
+            
+            # Method 2: Alternative - check multiple columns to be sure
+            all_receipt_numbers = sheet.col_values(13)  # Column M
+            for i, receipt_num in enumerate(all_receipt_numbers[1:], start=2):
+                if receipt_num and receipt_num != "#N/A" and not receipt_num.startswith("="):
+                    last_data_row = max(last_data_row, i)
+            
+            # Method 3: As fallback, use the row count but skip obvious formula rows
+            if last_data_row == 1 and sheet.row_count > 2:
+                # Check if row 2 has data or is a formula row
+                row2_data = sheet.row_values(2)
+                if any(row2_data) and not any(str(cell).startswith("=") for cell in row2_data if cell):
+                    last_data_row = 2
+            
+            # Prepare data with proper types
+            row_data = []
+            for i, item in enumerate(data):
+                if 3 <= i <= 7 and item != '':
+                    try:
+                        row_data.append(float(item))
+                    except (ValueError, TypeError):
+                        row_data.append(item)
+                else:
+                    row_data.append(item)
+            
+            # Insert the new row right after the last data row
+            sheet.insert_row(row_data, index=last_data_row + 1, value_input_option='USER_ENTERED')
+            
             return {
                 "status": "success",
                 "message": "Receipt successfully added to sheet"
