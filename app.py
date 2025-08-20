@@ -126,13 +126,30 @@ def verify_details(extracted_data):
                 date = st.date_input("Date*", datetime.strptime(date_str, "%Y-%m-%d"))
             except:
                 date = st.date_input("Date*", datetime.now())
-            source = st.text_input("Source", extracted_data.get('source', 'unknown'))
+            source = st.text_input("Vendor/Source*", extracted_data.get('source', 'unknown'))
         
         receipt_number = st.text_input("Receipt Number", extracted_data.get('receipt_number', ''))
         
+        # NEW: Add dropdown menus and notes
+        col3, col4 = st.columns(2)
+        with col3:
+            payment_type = st.selectbox(
+                "Paid Inv/Pcard*",
+                options=["Reimbursement", "Invoice", "Store Receipt"],
+                index=0
+            )
+        with col4:
+            category = st.selectbox(
+                "Category*",
+                options=["Operational", "Carpenter", "Equipment", "McCabe", "Other"],
+                index=0
+            )
+        
+        notes = st.text_area("Notes", max_chars=200)
+        
         submitted = st.form_submit_button("Submit Verified Details")
         if submitted:
-            if not item or not cost:
+            if not item or not cost or not source:
                 st.error("Required fields marked with *")
                 return None
             
@@ -144,7 +161,11 @@ def verify_details(extracted_data):
                 'cost': formatted_cost,
                 'date': date.strftime("%Y-%m-%d"),
                 'source': source.lower(),
-                'receipt_number': receipt_number or f"receipt_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                'receipt_number': receipt_number or f"receipt_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                # NEW: Add the new fields
+                'payment_type': payment_type,
+                'category': category,
+                'notes': notes
             }
     return None
 
@@ -179,7 +200,7 @@ if st.session_state.processing_stage == "upload":
                     st.session_state.duplicate_receipt = True
                     st.session_state.receipt_details = extracted_data
                     st.session_state.current_receipt = file_bytes
-                    st.warning("⚠️ This receipt appears to have already been processed.\nClick the 'X' to cancel and process another receipt")
+                    st.warning('⚠️ This receipt appears to have already been processed.\nClick the "X" to cancel or click "Process another receipt"')
                     st.json(st.session_state.receipt_details)
                 else:
                     st.session_state.receipt_details = extracted_data
@@ -264,27 +285,43 @@ elif st.session_state.processing_stage == "submit":
         
         filename = f"{sanitize_filename(complete_data['name'])}_{sanitize_filename(complete_data['item'])}_{complete_data['receipt_number']}_{complete_data['cost']}.pdf"
         
+        # Update the display to show all fields
         st.json({
             "Sender": f"{complete_data['name']} <{complete_data['email']}>",
             "Item": complete_data['item'],
             "Cost": complete_data['cost'],
             "Date": complete_data['date'],
-            "Source": complete_data['source'],
-            "Receipt Number": complete_data['receipt_number']
+            "Vendor/Source": complete_data['source'],
+            "Receipt Number": complete_data['receipt_number'],
+            "Payment Type": complete_data.get('payment_type', 'Reimbursement'),
+            "Category": complete_data.get('category', 'Operational'),
+            "Notes": complete_data.get('notes', '')
         })
         
         if st.button("Confirm and Submit"):
             with st.spinner("Saving to Google Sheets..."):
                 try:
-                    if processor.append_to_sheet([
-                        complete_data['name'],
-                        complete_data['email'],
-                        complete_data['item'],
-                        complete_data['cost'],
-                        complete_data['date'],
-                        complete_data['source'],
-                        complete_data['receipt_number']
-                    ]):
+                    # Convert cost to number for Google Sheets formulas
+                    cost_value = float(complete_data['cost'])
+                    
+                    # Prepare data in the new column order
+                    sheet_data = [
+                        complete_data['date'],  # Date
+                        complete_data['source'],  # Vendor/Source
+                        complete_data.get('payment_type', 'Reimbursement'),  # Paid Inv/Pcard
+                        cost_value if complete_data.get('category') == 'Operational' else '',  # Operational (as number)
+                        cost_value if complete_data.get('category') == 'Carpenter' else '',  # Carpenter (as number)
+                        cost_value if complete_data.get('category') == 'Equipment' else '',  # Equipment (as number)
+                        cost_value if complete_data.get('category') == 'McCabe' else '',  # McCabe (as number)
+                        cost_value if complete_data.get('category') == 'Other' else '',  # Other (as number)
+                        complete_data.get('notes', ''),  # Notes
+                        complete_data['name'],  # Sender Name
+                        complete_data['email'],  # Sender Email
+                        complete_data['item'],  # Item
+                        complete_data['receipt_number']  # Receipt Number
+                    ]
+                    
+                    if processor.append_to_sheet(sheet_data):
                         st.session_state.processing_stage = "complete"
                         st.rerun()
                 except Exception as e:
