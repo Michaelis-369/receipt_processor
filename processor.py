@@ -4,6 +4,7 @@ import requests
 import imaplib
 import email
 import gspread
+import base64
 from email.header import decode_header
 from email.utils import parseaddr
 from datetime import datetime
@@ -11,13 +12,15 @@ from dateutil import parser
 from oauth2client.service_account import ServiceAccountCredentials
 
 class ReceiptProcessor:
-    def __init__(self, anthropic_api_key, email_address, email_password, sheet_id, google_creds):
+    def __init__(self, anthropic_api_key, email_address, email_password, sheet_id, google_creds, openai_api_key=None):
         self.anthropic_headers = {
             "x-api-key": anthropic_api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json"
         }
         self.anthropic_url = "https://api.anthropic.com/v1/messages"
+        self.openai_api_key = openai_api_key
+        self.openai_url = "https://api.openai.com/v1/chat/completions"
         self.email_address = email_address
         self.email_password = email_password
         self.sheet_id = sheet_id
@@ -95,6 +98,81 @@ class ReceiptProcessor:
             }
         except Exception as e:
             print(f"API Error: {str(e)}")
+            return None
+
+    def parse_receipt_image(self, image_bytes, file_type="jpeg"):
+        """Parse receipt image using OpenAI GPT-4o-mini Vision API"""
+        if not self.openai_api_key:
+            print("OpenAI API key not configured")
+            return None
+            
+        try:
+            # Encode image to base64
+            base64_image = base64.b64encode(image_bytes).decode('utf-8')
+            
+            prompt = """Analyze this receipt image and extract these details:
+            - item: The generic name of the product purchased (2 words max, hyphen separated if multiple)
+            - cost: The grand total paid (numbers only)
+            - date: The order date (YYYY-MM-DD format)
+            - source: The store/vendor name
+            - receipt_number: The order/transaction ID
+
+            Return ONLY a JSON object with these exact keys. Example:
+            {
+                "item": "product name",
+                "cost": "100.00",
+                "date": "2025-06-21",
+                "source": "store name",
+                "receipt_number": "123-4567890"
+            }"""
+
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.openai_api_key}"
+            }
+
+            data = {
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/{file_type};base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "max_tokens": 500,
+                "response_format": { "type": "json_object" }
+            }
+
+            response = requests.post(
+                self.openai_url,
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+            response.raise_for_status()
+            
+            result = response.json()["choices"][0]["message"]["content"]
+            result_data = json.loads(result)
+            
+            return {
+                "item": str(result_data.get("item", "unknown")).strip()[:50],
+                "cost": re.sub(r'[^\d.]', '', str(result_data.get("cost", "0"))),
+                "date": self._parse_date(result_data.get("date")),
+                "source": str(result_data.get("source", "unknown")).strip()[:50],
+                "receipt_number": str(result_data.get("receipt_number", "")).strip()[:50] or 
+                                 f"auto_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            }
+            
+        except Exception as e:
+            print(f"OpenAI Vision API Error: {str(e)}")
             return None
 
     def _parse_date(self, date_str):
