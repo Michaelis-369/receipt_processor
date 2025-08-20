@@ -2,6 +2,7 @@ import re
 from io import BytesIO
 import streamlit as st
 import PyPDF2
+import hashlib
 from processor import ReceiptProcessor
 from datetime import datetime
 
@@ -15,7 +16,9 @@ def init_session_state():
         'unread_emails': None,
         'email_check_performed': False,
         'sender_info': None,
-        'duplicate_receipt': False  # New session state for duplicate tracking
+        'duplicate_receipt': False,
+        'file_type': None,
+        'file_hash': None
     }
     for key, value in session_vars.items():
         if key not in st.session_state:
@@ -27,7 +30,7 @@ init_session_state()
 def check_auth():
     try:
         VALID_TOKENS = {
-            "client1": "token-abc123",  # Replace with your tokens
+            "client1": "token-abc123",
             "client2": "token-xyz789"
         }
         
@@ -65,6 +68,7 @@ processor = ReceiptProcessor(
     email_address=st.secrets["EMAIL_ADDRESS"],
     email_password=st.secrets["EMAIL_PASSWORD"],
     sheet_id=st.secrets["SHEET_ID"],
+    openai_api_key=st.secrets["OPENAI_API_KEY"],
     google_creds={
         "type": "service_account",
         "project_id": st.secrets["project_id"],
@@ -88,10 +92,36 @@ def reset_processing():
     st.session_state.email_check_performed = False
     st.session_state.sender_info = None
     st.session_state.duplicate_receipt = False
+    st.session_state.file_type = None
+    st.session_state.file_hash = None
     st.rerun()
 
 def sanitize_filename(text):
     return re.sub(r'[^\w_.-]', '', text.replace(' ', '_'))
+
+def analyze_pdf_content(file_bytes):
+    """Quickly determine if PDF contains extractable text"""
+    try:
+        reader = PyPDF2.PdfReader(BytesIO(file_bytes))
+        # Check first page only for speed
+        text = reader.pages[0].extract_text() or ""
+        return len(text.strip()) > 50  # Has substantial text
+    except:
+        return False
+
+def extract_text_from_pdf(file_bytes):
+    """Extract text from PDF efficiently"""
+    try:
+        reader = PyPDF2.PdfReader(BytesIO(file_bytes))
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        return text.strip()
+    except Exception as e:
+        print(f"PDF text extraction error: {e}")
+        return ""
+
+def get_file_extension(filename):
+    """Extract file extension from filename"""
+    return filename.lower().split('.')[-1] if '.' in filename else ""
 
 st.title("📄 Professional Receipt Processor")
 
@@ -130,7 +160,6 @@ def verify_details(extracted_data):
         
         receipt_number = st.text_input("Receipt Number", extracted_data.get('receipt_number', ''))
         
-        # NEW: Add dropdown menus and notes
         col3, col4 = st.columns(2)
         with col3:
             payment_type = st.selectbox(
@@ -162,7 +191,6 @@ def verify_details(extracted_data):
                 'date': date.strftime("%Y-%m-%d"),
                 'source': source.lower(),
                 'receipt_number': receipt_number or f"receipt_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                # NEW: Add the new fields
                 'payment_type': payment_type,
                 'category': category,
                 'notes': notes
@@ -172,26 +200,55 @@ def verify_details(extracted_data):
 # Main processing flow
 if st.session_state.processing_stage == "upload":
     st.subheader("1. Upload Receipt")
-    uploaded_file = st.file_uploader("Select PDF receipt", type="pdf")
+    uploaded_file = st.file_uploader("Select PDF or image receipt", 
+                                   type=["pdf", "jpg", "jpeg", "png", "webp"])
     
     if uploaded_file:
-        with st.spinner("Extracting receipt data..."):
+        file_bytes = uploaded_file.read()
+        st.session_state.current_receipt = file_bytes
+        st.session_state.file_hash = hashlib.md5(file_bytes).hexdigest()
+        file_extension = get_file_extension(uploaded_file.name)
+        
+        with st.spinner("Analyzing file type..."):
             try:
-                file_bytes = uploaded_file.read()
-                text = "\n".join(
-                    page.extract_text() or "" 
-                    for page in PyPDF2.PdfReader(BytesIO(file_bytes)).pages
-                )
+                processing_method = None
+                extracted_data = None
                 
-                if not text.strip():
-                    st.error("The PDF appears to be empty or couldn't be read")
-                    st.session_state.processing_stage = "upload"
-                    st.stop()
+                if file_extension == "pdf":
+                    # Quick PDF content analysis to choose optimal method
+                    has_text = analyze_pdf_content(file_bytes)
+                    
+                    if has_text:
+                        # Use cheaper text extraction for text-based PDFs
+                        st.info("📄 Text PDF detected - extracting text efficiently...")
+                        text_content = extract_text_from_pdf(file_bytes)
+                        if text_content:
+                            extracted_data = processor.parse_receipt_text(text_content)
+                            processing_method = "text_extraction"
+                        else:
+                            st.warning("Text extraction failed, trying AI vision...")
+                            has_text = False
+                    
+                    if not has_text or not extracted_data:
+                        # Fallback to vision for image-based PDFs or failed text extraction
+                        st.info("🖼️ Image PDF detected - using AI vision...")
+                        extracted_data = processor.parse_receipt_image(file_bytes, "pdf")
+                        processing_method = "vision"
                 
-                extracted_data = processor.parse_receipt_text(text)
+                else:
+                    # Image files - use vision directly
+                    st.info("📸 Image detected - analyzing with AI...")
+                    if file_extension in ['jpg', 'jpeg']:
+                        file_type = 'jpeg'
+                    else:
+                        file_type = file_extension
+                    
+                    extracted_data = processor.parse_receipt_image(file_bytes, file_type)
+                    processing_method = "vision"
+                    st.image(file_bytes, caption="Uploaded Receipt", use_container_width=True)
                 
                 if not extracted_data:
-                    st.error("Could not extract data from PDF")
+                    st.error("Could not extract data from file")
                     st.session_state.processing_stage = "upload"
                     st.stop()
                 
@@ -199,17 +256,15 @@ if st.session_state.processing_stage == "upload":
                 if processor.check_duplicate_receipt(extracted_data['receipt_number']):
                     st.session_state.duplicate_receipt = True
                     st.session_state.receipt_details = extracted_data
-                    st.session_state.current_receipt = file_bytes
                     st.warning('⚠️ This receipt appears to have already been processed.\nClick the "X" to cancel or click "Process another receipt"')
                     st.json(st.session_state.receipt_details)
                 else:
                     st.session_state.receipt_details = extracted_data
-                    st.session_state.current_receipt = file_bytes
                     st.session_state.processing_stage = "verify"
                     st.rerun()
                     
             except Exception as e:
-                st.error(f"Error processing PDF: {str(e)}")
+                st.error(f"Error processing file: {str(e)}")
                 st.session_state.processing_stage = "upload"
                 st.stop()
 
@@ -285,7 +340,6 @@ elif st.session_state.processing_stage == "submit":
         
         filename = f"{sanitize_filename(complete_data['name'])}_{sanitize_filename(complete_data['item'])}_{complete_data['receipt_number']}_{complete_data['cost']}.pdf"
         
-        # Update the display to show all fields
         st.json({
             "Sender": f"{complete_data['name']} <{complete_data['email']}>",
             "Item": complete_data['item'],
@@ -301,29 +355,30 @@ elif st.session_state.processing_stage == "submit":
         if st.button("Confirm and Submit"):
             with st.spinner("Saving to Google Sheets..."):
                 try:
-                    # Convert cost to number for Google Sheets formulas
                     cost_value = float(complete_data['cost'])
                     
-                    # Prepare data in the new column order
                     sheet_data = [
-                        complete_data['date'],  # Date
-                        complete_data['source'],  # Vendor/Source
-                        complete_data.get('payment_type', 'Reimbursement'),  # Paid Inv/Pcard
-                        cost_value if complete_data.get('category') == 'Operational' else '',  # Operational (as number)
-                        cost_value if complete_data.get('category') == 'Carpenter' else '',  # Carpenter (as number)
-                        cost_value if complete_data.get('category') == 'Equipment' else '',  # Equipment (as number)
-                        cost_value if complete_data.get('category') == 'McCabe' else '',  # McCabe (as number)
-                        cost_value if complete_data.get('category') == 'Other' else '',  # Other (as number)
-                        complete_data.get('notes', ''),  # Notes
-                        complete_data['name'],  # Sender Name
-                        complete_data['email'],  # Sender Email
-                        complete_data['item'],  # Item
-                        complete_data['receipt_number']  # Receipt Number
+                        complete_data['date'],
+                        complete_data['source'],
+                        complete_data.get('payment_type', 'Reimbursement'),
+                        cost_value if complete_data.get('category') == 'Operational' else '',
+                        cost_value if complete_data.get('category') == 'Carpenter' else '',
+                        cost_value if complete_data.get('category') == 'Equipment' else '',
+                        cost_value if complete_data.get('category') == 'McCabe' else '',
+                        cost_value if complete_data.get('category') == 'Other' else '',
+                        complete_data.get('notes', ''),
+                        complete_data['name'],
+                        complete_data['email'],
+                        complete_data['item'],
+                        complete_data['receipt_number']
                     ]
                     
-                    if processor.append_to_sheet(sheet_data):
+                    result = processor.append_to_sheet(sheet_data)
+                    if result and result.get("status") == "success":
                         st.session_state.processing_stage = "complete"
                         st.rerun()
+                    else:
+                        st.error(result.get("message", "Submission failed"))
                 except Exception as e:
                     st.error(f"Submission failed: {str(e)}")
 
