@@ -289,6 +289,7 @@ elif st.session_state.processing_stage == "verify":
 elif st.session_state.processing_stage == "sender":
     st.subheader("3. Sender Information")
     
+    # Option 1: Check emails
     if st.button("Check Emails for Sender Info"):
         with st.spinner("Checking emails..."):
             try:
@@ -300,6 +301,49 @@ elif st.session_state.processing_stage == "sender":
                 st.error(f"Email error: {str(e)}")
                 st.session_state.email_check_performed = True
                 st.rerun()
+    
+    # Option 2: Manual entry
+    st.write("**Or enter sender information manually:**")
+    manual_info = get_sender_info()
+    if manual_info:
+        st.session_state.sender_info = manual_info
+        st.session_state.processing_stage = "submit"
+        st.rerun()
+    
+    # Option 3: Proceed without email
+    st.write("**Or proceed without sender information:**")
+    if st.button("Continue without sender info"):
+        st.session_state.sender_info = {
+            'name': 'Unknown',
+            'email': 'no_email@example.com'
+        }
+        st.session_state.processing_stage = "submit"
+        st.rerun()
+    
+    # Show email results if available
+    if st.session_state.email_check_performed:
+        if st.session_state.unread_emails:
+            st.write("**Select from unread emails:**")
+            email_options = {
+                i: f"{email['subject']} ({email['from']})" 
+                for i, email in enumerate(st.session_state.unread_emails)
+            }
+            selected = st.selectbox(
+                "Select matching email", 
+                options=list(email_options.keys()),
+                format_func=lambda x: email_options[x]
+            )
+            
+            if st.button("Use Selected Email"):
+                selected_email = st.session_state.unread_emails[selected]
+                st.session_state.sender_info = {
+                    'name': selected_email.get('name'),
+                    'email': selected_email.get('email')
+                }
+                st.session_state.processing_stage = "submit"
+                st.rerun()
+        else:
+            st.warning("No unread emails found")
     
     if st.session_state.email_check_performed:
         if st.session_state.unread_emails:
