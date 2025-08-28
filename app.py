@@ -13,9 +13,6 @@ def init_session_state():
         'current_receipt': None,
         'receipt_details': None,
         'processing_stage': "upload",
-        'unread_emails': None,
-        'email_check_performed': False,
-        'sender_info': None,
         'duplicate_receipt': False,
         'file_type': None,
         'file_hash': None
@@ -88,9 +85,6 @@ def reset_processing():
     st.session_state.current_receipt = None
     st.session_state.receipt_details = None
     st.session_state.processing_stage = "upload"
-    st.session_state.unread_emails = None
-    st.session_state.email_check_performed = False
-    st.session_state.sender_info = None
     st.session_state.duplicate_receipt = False
     st.session_state.file_type = None
     st.session_state.file_hash = None
@@ -124,23 +118,6 @@ def get_file_extension(filename):
     return filename.lower().split('.')[-1] if '.' in filename else ""
 
 st.title("📄 Professional Receipt Processor")
-
-def get_sender_info():
-    with st.form("sender_info_form"):
-        st.subheader("Sender Information")
-        sender_name = st.text_input("Sender Name*", max_chars=50)
-        sender_email = st.text_input("Sender Email", max_chars=100)
-        
-        submitted = st.form_submit_button("Submit")
-        if submitted:
-            if not sender_name:
-                st.error("Name is required")
-                return None
-            return {
-                'name': sender_name,
-                'email': sender_email or "no_email@example.com"
-            }
-    return None
 
 def verify_details(extracted_data):
     with st.form("verify_details"):
@@ -283,109 +260,18 @@ elif st.session_state.processing_stage == "verify":
         
         if verified_data:
             st.session_state.receipt_details = verified_data
-            st.session_state.processing_stage = "sender"
+            st.session_state.processing_stage = "submit"
             st.rerun()
 
-elif st.session_state.processing_stage == "sender":
-    st.subheader("3. Sender Information")
-    
-    # Option 1: Check emails
-    if st.button("Check Emails for Sender Info"):
-        with st.spinner("Checking emails..."):
-            try:
-                emails = processor.get_unread_emails()
-                st.session_state.unread_emails = emails if emails else []
-                st.session_state.email_check_performed = True
-                st.rerun()
-            except Exception as e:
-                st.error(f"Email error: {str(e)}")
-                st.session_state.email_check_performed = True
-                st.rerun()
-    
-    # Option 2: Manual entry
-    st.write("**Or enter sender information manually:**")
-    manual_info = get_sender_info()
-    if manual_info:
-        st.session_state.sender_info = manual_info
-        st.session_state.processing_stage = "submit"
-        st.rerun()
-    
-    # Option 3: Proceed without email
-    st.write("**Or proceed without sender information:**")
-    if st.button("Continue without sender info"):
-        st.session_state.sender_info = {
-            'name': 'Unknown',
-            'email': 'no_email@example.com'
-        }
-        st.session_state.processing_stage = "submit"
-        st.rerun()
-    
-    # Show email results if available
-    if st.session_state.email_check_performed:
-        if st.session_state.unread_emails:
-            st.write("**Select from unread emails:**")
-            email_options = {
-                i: f"{email['subject']} ({email['from']})" 
-                for i, email in enumerate(st.session_state.unread_emails)
-            }
-            selected = st.selectbox(
-                "Select matching email", 
-                options=list(email_options.keys()),
-                format_func=lambda x: email_options[x]
-            )
-            
-            if st.button("Use Selected Email"):
-                selected_email = st.session_state.unread_emails[selected]
-                st.session_state.sender_info = {
-                    'name': selected_email.get('name'),
-                    'email': selected_email.get('email')
-                }
-                st.session_state.processing_stage = "submit"
-                st.rerun()
-        else:
-            st.warning("No unread emails found")
-    
-    if st.session_state.email_check_performed:
-        if st.session_state.unread_emails:
-            email_options = {
-                i: f"{email['subject']} ({email['from']})" 
-                for i, email in enumerate(st.session_state.unread_emails)
-            }
-            selected = st.selectbox(
-                "Select matching email", 
-                options=list(email_options.keys()),
-                format_func=lambda x: email_options[x]
-            )
-            
-            if st.button("Use Selected Email"):
-                selected_email = st.session_state.unread_emails[selected]
-                st.session_state.sender_info = {
-                    'name': selected_email.get('name'),
-                    'email': selected_email.get('email')
-                }
-                st.session_state.processing_stage = "submit"
-                st.rerun()
-        else:
-            st.warning("No unread emails found - please enter sender information manually")
-            manual_info = get_sender_info()
-            if manual_info:
-                st.session_state.sender_info = manual_info
-                st.session_state.processing_stage = "submit"
-                st.rerun()
-
 elif st.session_state.processing_stage == "submit":
-    st.subheader("4. Submit to Google Sheets")
+    st.subheader("3. Submit to Google Sheets")
     
     if st.session_state.receipt_details and st.session_state.current_receipt:
-        complete_data = {
-            **(st.session_state.sender_info or {'name': 'Unknown', 'email': 'no_email@example.com'}),
-            **st.session_state.receipt_details
-        }
+        complete_data = st.session_state.receipt_details
         
-        filename = f"{sanitize_filename(complete_data['name'])}_{sanitize_filename(complete_data['item'])}_{complete_data['receipt_number']}_{complete_data['cost']}.pdf"
+        filename = f"{sanitize_filename(complete_data['item'])}_{complete_data['receipt_number']}_{complete_data['cost']}.pdf"
         
         st.json({
-            "Sender": f"{complete_data['name']} <{complete_data['email']}>",
             "Item": complete_data['item'],
             "Cost": complete_data['cost'],
             "Date": complete_data['date'],
@@ -411,10 +297,9 @@ elif st.session_state.processing_stage == "submit":
                         cost_value if complete_data.get('category') == 'McCabe' else '',
                         cost_value if complete_data.get('category') == 'Other' else '',
                         complete_data.get('notes', ''),
-                        complete_data['name'],
-                        complete_data['email'],
                         complete_data['item'],
                         complete_data['receipt_number']
+                        # Removed name and email columns
                     ]
                     
                     result = processor.append_to_sheet(sheet_data)
@@ -429,11 +314,8 @@ elif st.session_state.processing_stage == "submit":
 elif st.session_state.processing_stage == "complete":
     st.success("✅ Processing complete! Data saved to Google Sheets.")
     
-    complete_data = {
-        **(st.session_state.sender_info or {'name': 'Unknown'}),
-        **st.session_state.receipt_details
-    }
-    filename = f"{sanitize_filename(complete_data['name'])}_{sanitize_filename(complete_data['item'])}_{complete_data['receipt_number']}_{complete_data['cost']}.pdf"
+    complete_data = st.session_state.receipt_details
+    filename = f"{sanitize_filename(complete_data['item'])}_{complete_data['receipt_number']}_{complete_data['cost']}.pdf"
     
     st.download_button(
         "Download Renamed Receipt",
