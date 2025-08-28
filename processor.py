@@ -234,27 +234,27 @@ class ReceiptProcessor:
             spreadsheet = self.gc.open_by_key(self.sheet_id)
             sheet = spreadsheet.sheet1
             
-            # Get all receipt numbers from column 13 (index 12)
-            existing_numbers = sheet.col_values(13)[1:]  # Skip header row
+            # Get all receipt numbers from column 11 (index 10) instead of 13
+            existing_numbers = sheet.col_values(11)[1:]  # Skip header row
             
             # Check if the receipt number already exists
             return receipt_number in existing_numbers
         except Exception as e:
             print(f"Duplicate check error: {str(e)}")
             return False
-
+    
     def append_to_sheet(self, data):
         """Append receipt data to Google Sheet with proper number formatting"""
         try:
             spreadsheet = self.gc.open_by_key(self.sheet_id)
             sheet = spreadsheet.sheet1
             
-            # Updated header with new column order
+            # Updated header with new column order (removed name and email)
             expected_header = [
                 "Date", "Vendor/Source", "Paid Inv/Pcard", 
                 "Operational", "Carpenter", "Equipment", 
                 "McCabe", "Other", "Notes",
-                "Sender Name", "Sender Email", "Item", "Receipt Number"
+                "Item", "Receipt Number"  # Removed "Sender Name" and "Sender Email"
             ]
             
             current_header = sheet.row_values(1)
@@ -263,8 +263,8 @@ class ReceiptProcessor:
                     sheet.delete_rows(1)
                 sheet.insert_row(expected_header, 1)
 
-            # Check for duplicates
-            if self.check_duplicate_receipt(data[12]):
+            # Check for duplicates (now in column 11 instead of 13)
+            if self.check_duplicate_receipt(data[10]):  # Changed index from 12 to 10
                 return {
                     "status": "duplicate",
                     "message": "This receipt has already been processed"
@@ -279,7 +279,7 @@ class ReceiptProcessor:
                     last_data_row = i
             
             # Method 2: Alternative - check multiple columns to be sure
-            all_receipt_numbers = sheet.col_values(13)  # Column M
+            all_receipt_numbers = sheet.col_values(11)  # Column K instead of M
             for i, receipt_num in enumerate(all_receipt_numbers[1:], start=2):
                 if receipt_num and receipt_num != "#N/A" and not receipt_num.startswith("="):
                     last_data_row = max(last_data_row, i)
@@ -294,7 +294,7 @@ class ReceiptProcessor:
             # Prepare data with proper types
             row_data = []
             for i, item in enumerate(data):
-                if 3 <= i <= 7 and item != '':
+                if 3 <= i <= 7 and item != '':  # Note: indices changed due to removed columns
                     try:
                         row_data.append(float(item))
                     except (ValueError, TypeError):
