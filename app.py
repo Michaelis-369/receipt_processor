@@ -65,7 +65,6 @@ processor = ReceiptProcessor(
     email_address=st.secrets["EMAIL_ADDRESS"],
     email_password=st.secrets["EMAIL_PASSWORD"],
     sheet_id=st.secrets["SHEET_ID"],
-    openai_api_key=st.secrets["OPENAI_API_KEY"],
     google_creds={
         "type": "service_account",
         "project_id": st.secrets["project_id"],
@@ -78,7 +77,8 @@ processor = ReceiptProcessor(
         "auth_provider_x509_cert_url": st.secrets["auth_provider_x509_cert_url"],
         "client_x509_cert_url": st.secrets["client_x509_cert_url"],
         "universe_domain": st.secrets["universe_domain"]
-    }
+    },
+    openai_api_key=st.secrets["OPENAI_API_KEY"]
 )
 
 def reset_processing():
@@ -153,7 +153,16 @@ def verify_details(extracted_data):
         
         notes = st.text_area("Notes", max_chars=200)
         
-        submitted = st.form_submit_button("Submit Verified Details")
+        col5, col6 = st.columns(2)
+        with col5:
+            submitted = st.form_submit_button("Submit Verified Details")
+        with col6:
+            cancel_verify = st.form_submit_button("Cancel")
+        
+        if cancel_verify:
+            reset_processing()
+            return None
+            
         if submitted:
             if not item or not cost or not source:
                 st.error("Required fields marked with *")
@@ -282,34 +291,41 @@ elif st.session_state.processing_stage == "submit":
             "Notes": complete_data.get('notes', '')
         })
         
-        if st.button("Confirm and Submit"):
-            with st.spinner("Saving to Google Sheets..."):
-                try:
-                    cost_value = float(complete_data['cost'])
-                    
-                    sheet_data = [
-                        complete_data['date'],
-                        complete_data['source'],
-                        complete_data.get('payment_type', 'Reimbursement'),
-                        cost_value if complete_data.get('category') == 'Operational' else '',
-                        cost_value if complete_data.get('category') == 'Carpenter' else '',
-                        cost_value if complete_data.get('category') == 'Equipment' else '',
-                        cost_value if complete_data.get('category') == 'McCabe' else '',
-                        cost_value if complete_data.get('category') == 'Other' else '',
-                        complete_data.get('notes', ''),
-                        complete_data['item'],
-                        complete_data['receipt_number']
-                        # Removed name and email columns
-                    ]
-                    
-                    result = processor.append_to_sheet(sheet_data)
-                    if result and result.get("status") == "success":
-                        st.session_state.processing_stage = "complete"
-                        st.rerun()
-                    else:
-                        st.error(result.get("message", "Submission failed"))
-                except Exception as e:
-                    st.error(f"Submission failed: {str(e)}")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Confirm and Submit", type="primary"):
+                with st.spinner("Saving to Google Sheets..."):
+                    try:
+                        cost_value = float(complete_data['cost'])
+                        
+                        # Convert date to proper format for Google Sheets
+                        # Keep it as YYYY-MM-DD format which Google Sheets automatically recognizes as a date
+                        # The user can then format the column in Sheets to display as MM/DD/YYYY
+                        sheet_data = [
+                            complete_data['date'],  # Keep as YYYY-MM-DD for proper date recognition
+                            complete_data['source'],
+                            complete_data.get('payment_type', 'Reimbursement'),
+                            cost_value if complete_data.get('category') == 'Operational' else '',
+                            cost_value if complete_data.get('category') == 'Carpenter' else '',
+                            cost_value if complete_data.get('category') == 'Equipment' else '',
+                            cost_value if complete_data.get('category') == 'McCabe' else '',
+                            cost_value if complete_data.get('category') == 'Other' else '',
+                            complete_data.get('notes', ''),
+                            complete_data['item'],
+                            complete_data['receipt_number']
+                        ]
+                        
+                        result = processor.append_to_sheet(sheet_data)
+                        if result and result.get("status") == "success":
+                            st.session_state.processing_stage = "complete"
+                            st.rerun()
+                        else:
+                            st.error(result.get("message", "Submission failed"))
+                    except Exception as e:
+                        st.error(f"Submission failed: {str(e)}")
+        with col2:
+            if st.button("Cancel"):
+                reset_processing()
 
 elif st.session_state.processing_stage == "complete":
     st.success("✅ Processing complete! Data saved to Google Sheets.")
