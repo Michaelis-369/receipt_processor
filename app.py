@@ -309,7 +309,7 @@ elif st.session_state.processing_stage == "submit":
                             cost_value if complete_data.get('category') == 'Carpenter' else '',
                             cost_value if complete_data.get('category') == 'Equipment' else '',
                             cost_value if complete_data.get('category') == 'McCabe' else '',
-                            cost_value if complete_data.get('category') == 'Other' else '',
+                            cost_value if complete_data.get('category') == 'Macken E90' else '',
                             complete_data.get('notes', ''),
                             complete_data['item'],
                             complete_data['receipt_number']
