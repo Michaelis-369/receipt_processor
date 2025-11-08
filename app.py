@@ -147,7 +147,7 @@ def verify_details(extracted_data):
         with col4:
             category = st.selectbox(
                 "Category*",
-                options=["Operational", "Carpenter", "Equipment", "McCabe", "Other"],
+                options=["Operational", "Carpenter", "Equipment", "McCabe", "Macken E90"],
                 index=0
             )
         
