@@ -253,7 +253,7 @@ class ReceiptProcessor:
             expected_header = [
                 "Date", "Vendor/Source", "Paid Inv/Pcard", 
                 "Operational", "Carpenter", "Equipment", 
-                "McCabe", "Other", "Notes",
+                "McCabe", "Macken E90", "Notes",
                 "Item", "Receipt Number"  # Removed "Sender Name" and "Sender Email"
             ]
             
